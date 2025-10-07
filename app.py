@@ -4,6 +4,7 @@ import base64
 import time
 import re
 import json
+import os
 from email.mime.text import MIMEText
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
@@ -13,10 +14,10 @@ from googleapiclient.discovery import build
 # Streamlit Page Setup
 # ========================================
 st.set_page_config(page_title="📧 Gmail Mail Merge", layout="wide")
-st.title("📧 Gmail Mail Merge System")
+st.title("📧 Gmail Mail Merge - Streamlit Cloud Ready")
 
 # ========================================
-# Google OAuth Configuration
+# Gmail API Scopes
 # ========================================
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.send",
@@ -24,133 +25,219 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.labels",
 ]
 
-def gmail_authenticate():
-    """Authenticate user with Google OAuth"""
-    if "credentials" not in st.session_state:
-        st.session_state.credentials = None
+# ========================================
+# Write credentials.json from st.secrets
+# ========================================
+if not os.path.exists("credentials.json"):
+    with open("credentials.json", "w") as f:
+        f.write(st.secrets["gmail"]["credentials_json"])
 
-    if st.session_state.credentials:
-        creds = Credentials.from_authorized_user_info(st.session_state.credentials, SCOPES)
-        if creds and creds.valid:
-            return creds
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            return creds
-
-    # OAuth Flow
-    flow = Flow.from_client_secrets_file(
-        "credentials.json",
-        scopes=SCOPES,
-        redirect_uri="http://localhost:8501"
-    )
-    auth_url, _ = flow.authorization_url(prompt="consent")
-
-    st.markdown(f"[Authorize Gmail Access]({auth_url})")
-
-    auth_code = st.text_input("Paste the authorization code here:")
-    if auth_code:
-        flow.fetch_token(code=auth_code)
-        creds = flow.credentials
-        st.session_state.credentials = json.loads(creds.to_json())
-        st.success("✅ Authentication successful!")
-        return creds
-    return None
+CLIENT_CONFIG = {
+    "web": {
+        "client_id": st.secrets["gmail"]["client_id"],
+        "client_secret": st.secrets["gmail"]["client_secret"],
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "redirect_uris": [st.secrets["gmail"]["redirect_uri"]],
+    }
+}
 
 # ========================================
-# Label Handling — Stable Version
+# Email Regex
+# ========================================
+EMAIL_REGEX = re.compile(r"[\w\.-]+@[\w\.-]+\.\w+")
+def extract_email(value: str):
+    if not value:
+        return None
+    match = EMAIL_REGEX.search(str(value))
+    return match.group(0) if match else None
+
+# ========================================
+# Gmail Label Helper (Stable)
 # ========================================
 def get_or_create_label(service, label_name="Mail Merge Sent"):
-    """Get or create a Gmail label reliably, even if called multiple times."""
+    """Get or create Gmail label reliably."""
     try:
-        response = service.users().labels().list(userId="me").execute()
-        labels = response.get("labels", [])
+        labels = service.users().labels().list(userId="me").execute().get("labels", [])
+        existing = next((l for l in labels if l["name"].lower() == label_name.lower()), None)
+        if existing:
+            return existing["id"]
 
-        # Try exact match (case-insensitive)
-        existing_label = next((l for l in labels if l["name"].lower() == label_name.lower()), None)
-        if existing_label:
-            return existing_label["id"]
-
-        # Create new label if not found
         new_label = {
             "name": label_name,
             "labelListVisibility": "labelShow",
             "messageListVisibility": "show",
         }
         created = service.users().labels().create(userId="me", body=new_label).execute()
-
-        # Wait to ensure Gmail syncs new label
-        time.sleep(2)
-
-        # Confirm label creation
+        time.sleep(2)  # wait for Gmail to sync
+        # confirm label creation
         labels = service.users().labels().list(userId="me").execute().get("labels", [])
         confirmed = next((l for l in labels if l["name"].lower() == label_name.lower()), None)
-
         return confirmed["id"] if confirmed else created["id"]
-
     except Exception as e:
         st.error(f"⚠️ Label error: {e}")
         return None
 
 # ========================================
-# Gmail Send Function
+# Convert **bold** and [link](url) to HTML
 # ========================================
-def create_message(sender, to, subject, message_text):
-    msg = MIMEText(message_text, "html")
-    msg["to"] = to
-    msg["from"] = sender
-    msg["subject"] = subject
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-    return {"raw": raw}
-
-def send_email(service, sender, to, subject, body, label_id):
-    msg_body = create_message(sender, to, subject, body)
-    sent_msg = service.users().messages().send(userId="me", body=msg_body).execute()
-    msg_id = sent_msg["id"]
-
-    # Apply label after send
-    if label_id:
-        try:
-            modified = service.users().messages().modify(
-                userId="me",
-                id=msg_id,
-                body={"addLabelIds": [label_id]},
-            ).execute()
-            st.write(f"✅ Label applied: {modified.get('labelIds', [])}")
-        except Exception as e:
-            st.error(f"❌ Label apply failed: {e}")
+def convert_bold(text):
+    if not text:
+        return ""
+    text = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(
+        r"\[(.*?)\]\((https?://[^\s)]+)\)",
+        r'<a href="\2" style="color:#1a73e8; text-decoration:underline;" target="_blank">\1</a>',
+        text,
+    )
+    text = text.replace("\n", "<br>").replace("  ", "&nbsp;&nbsp;")
+    html_body = f"""
+    <html>
+        <body style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6;">
+            {text}
+        </body>
+    </html>
+    """
+    return html_body
 
 # ========================================
-# UI Section
+# OAuth Flow
+# ========================================
+if "creds" not in st.session_state:
+    st.session_state["creds"] = None
+
+if st.session_state["creds"]:
+    creds = Credentials.from_authorized_user_info(
+        json.loads(st.session_state["creds"]), SCOPES
+    )
+else:
+    code = st.experimental_get_query_params().get("code", None)
+    if code:
+        flow = Flow.from_client_config(CLIENT_CONFIG, scopes=SCOPES)
+        flow.redirect_uri = st.secrets["gmail"]["redirect_uri"]
+        flow.fetch_token(code=code[0])
+        creds = flow.credentials
+        st.session_state["creds"] = creds.to_json()
+        st.experimental_rerun()
+    else:
+        flow = Flow.from_client_config(CLIENT_CONFIG, scopes=SCOPES)
+        flow.redirect_uri = st.secrets["gmail"]["redirect_uri"]
+        auth_url, _ = flow.authorization_url(
+            prompt="consent", access_type="offline", include_granted_scopes="true"
+        )
+        st.markdown(f"### 🔑 Please [authorize the app]({auth_url}) to send emails using your Gmail account.")
+        st.stop()
+
+# Build Gmail API client
+creds = Credentials.from_authorized_user_info(json.loads(st.session_state["creds"]), SCOPES)
+service = build("gmail", "v1", credentials=creds)
+
+# ========================================
+# Upload Recipients
 # ========================================
 st.header("📤 Upload Recipient List")
-uploaded_file = st.file_uploader("Upload CSV file with columns: Email, Name", type=["csv"])
-subject = st.text_input("Email Subject:")
-body = st.text_area("Email Body (you can use {Name} placeholders):")
-label_name = st.text_input("Label Name:", value="Mail Merge Sent")
+uploaded_file = st.file_uploader("Upload CSV or Excel file", type=["csv", "xlsx"])
 
 if uploaded_file:
-    df = pd.read_csv(uploaded_file)
+    if uploaded_file.name.endswith("csv"):
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_excel(uploaded_file)
     st.dataframe(df.head())
 
-creds = gmail_authenticate()
+    # ========================================
+    # Email Template
+    # ========================================
+    st.header("✍️ Compose Your Email")
+    subject_template = st.text_input("Subject", "Hello {Name}")
+    body_template = st.text_area(
+        "Body (supports **bold**, [link](https://example.com), line breaks)",
+        """Dear {Name},
 
-# ========================================
-# Sending Logic
-# ========================================
-if creds and uploaded_file and st.button("🚀 Send Emails"):
-    try:
-        service = build("gmail", "v1", credentials=creds)  # fresh client
-        sender_info = service.users().getProfile(userId="me").execute()
-        sender_email = sender_info["emailAddress"]
+Welcome to our **Mail Merge App** demo.
+
+Visit [Google](https://google.com) for examples.
+
+Thanks,  
+**Your Company**
+""",
+        height=250,
+    )
+
+    # ========================================
+    # Email Preview
+    # ========================================
+    st.subheader("👁️ Preview Email")
+    if not df.empty:
+        recipient_options = df["Email"].astype(str).tolist()
+        selected_email = st.selectbox("Select recipient to preview", recipient_options)
+        try:
+            preview_row = df[df["Email"] == selected_email].iloc[0]
+            preview_subject = subject_template.format(**preview_row)
+            preview_body = body_template.format(**preview_row)
+            preview_html = convert_bold(preview_body)
+            st.markdown(f"**Subject:** {preview_subject}")
+            st.markdown("---")
+            st.markdown(preview_html, unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"Error rendering preview: {e}")
+
+    # ========================================
+    # Label & Delay Options
+    # ========================================
+    st.header("🏷️ Label & Timing Options")
+    # Optional date-based sub-label
+    use_date_label = st.checkbox("Organize labels by date", value=True)
+    base_label_name = st.text_input("Gmail Label Name", "Mail Merge Sent")
+    label_name = f"{base_label_name}/{time.strftime('%Y-%m-%d')}" if use_date_label else base_label_name
+    delay = st.number_input("Delay between emails (seconds)", min_value=0, max_value=10, value=2, step=1)
+
+    # ========================================
+    # Send Emails
+    # ========================================
+    if st.button("🚀 Send Emails"):
         label_id = get_or_create_label(service, label_name)
+        sent_count = 0
+        skipped = []
+        errors = []
 
-        for index, row in df.iterrows():
-            to = row["Email"]
-            msg_body = body.format(**row)
-            send_email(service, sender_email, to, subject, msg_body, label_id)
-            time.sleep(1)
+        with st.spinner("📨 Sending emails..."):
+            for idx, row in df.iterrows():
+                to_addr_raw = str(row.get("Email", "")).strip()
+                to_addr = extract_email(to_addr_raw)
+                if not to_addr:
+                    skipped.append(to_addr_raw)
+                    continue
 
-        st.success("✅ All emails sent successfully with label applied!")
+                try:
+                    subject = subject_template.format(**row)
+                    body_text = body_template.format(**row)
+                    html_body = convert_bold(body_text)
 
-    except Exception as e:
-        st.error(f"❌ Error sending emails: {e}")
+                    # Send email
+                    message = MIMEText(html_body, "html")
+                    message["to"] = to_addr
+                    message["subject"] = subject
+                    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+                    msg_body = {"raw": raw}
+                    sent_msg = service.users().messages().send(userId="me", body=msg_body).execute()
+
+                    # Apply label after send
+                    if label_id:
+                        service.users().messages().modify(
+                            userId="me",
+                            id=sent_msg["id"],
+                            body={"addLabelIds": [label_id]},
+                        ).execute()
+
+                    sent_count += 1
+                    time.sleep(delay)
+
+                except Exception as e:
+                    errors.append((to_addr, str(e)))
+
+        st.success(f"✅ Successfully sent {sent_count} emails.")
+        if skipped:
+            st.warning(f"⚠️ Skipped {len(skipped)} invalid emails: {skipped}")
+        if errors:
+            st.error(f"❌ Failed to send {len(errors)} emails: {errors}")
