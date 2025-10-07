@@ -37,9 +37,10 @@ CLIENT_CONFIG = {
 # ========================================
 # Smart Email Extractor
 # ========================================
-EMAIL_REGEX = re.compile(r"[\w\.\+\-]+@[\w\.-]+\.\w+")
+EMAIL_REGEX = re.compile(r"[\w\.-]+@[\w\.-]+\.\w+")
 
 def extract_email(value: str):
+    """Extracts the first valid email from a string, or None if not found."""
     if not value:
         return None
     match = EMAIL_REGEX.search(str(value))
@@ -49,11 +50,13 @@ def extract_email(value: str):
 # Gmail Label Helper
 # ========================================
 def get_or_create_label(service, label_name="Mail Merge Sent"):
+    """Returns the label ID for the given label name, creates it if missing."""
     try:
         labels = service.users().labels().list(userId="me").execute().get("labels", [])
         for label in labels:
             if label["name"].lower() == label_name.lower():
                 return label["id"]
+
         label_obj = {
             "name": label_name,
             "labelListVisibility": "labelShow",
@@ -61,6 +64,7 @@ def get_or_create_label(service, label_name="Mail Merge Sent"):
         }
         created_label = service.users().labels().create(userId="me", body=label_obj).execute()
         return created_label["id"]
+
     except Exception as e:
         st.warning(f"Could not get/create label: {e}")
         return None
@@ -69,19 +73,27 @@ def get_or_create_label(service, label_name="Mail Merge Sent"):
 # Bold + Link Converter
 # ========================================
 def convert_bold(text):
+    """
+    Converts **bold** syntax and [text](url) to working HTML.
+    Preserves spacing, line breaks, and Gmail-style link formatting.
+    """
     if not text:
         return ""
+
     # Bold conversion
     text = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", text)
+
     # Link conversion [text](https://example.com)
     text = re.sub(
         r"\[(.*?)\]\((https?://[^\s)]+)\)",
         r'<a href="\2" style="color:#1a73e8; text-decoration:underline;" target="_blank">\1</a>',
         text,
     )
+
     # Preserve newlines & spaces
     text = text.replace("\n", "<br>").replace("  ", "&nbsp;&nbsp;")
-    # Wrap with full HTML
+
+    # Wrap with full HTML for Gmail rendering
     html_body = f"""
     <html>
         <body style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6;">
@@ -161,17 +173,10 @@ Thanks,
     )
 
     # ========================================
-    # Follow-Up Options
-    # ========================================
-    st.header("🔁 Follow-Up Options")
-    followup_enabled = st.checkbox("Send follow-up email?")
-    followup_delay = st.number_input("Delay before follow-up (seconds)", min_value=0, max_value=86400, value=10)
-    followup_body = st.text_area("Follow-up email body", "Just following up on my previous email...")
-
-    # ========================================
     # Preview Section
     # ========================================
     st.subheader("👁️ Preview Email")
+
     if not df.empty:
         recipient_options = df["Email"].astype(str).tolist()
         selected_email = st.selectbox("Select recipient to preview", recipient_options)
@@ -199,16 +204,6 @@ Thanks,
     # ========================================
     # Send Emails
     # ========================================
-    def send_followup(service, to_addr, thread_id, subject, body_html):
-        message = MIMEText(body_html, "html")
-        message["to"] = to_addr
-        message["subject"] = subject
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        service.users().messages().send(
-            userId="me",
-            body={"raw": raw, "threadId": thread_id}
-        ).execute()
-
     if st.button("🚀 Send Emails"):
         label_id = get_or_create_label(service, label_name)
         sent_count = 0
@@ -216,12 +211,14 @@ Thanks,
         errors = []
 
         with st.spinner("📨 Sending emails... please wait."):
+
             for idx, row in df.iterrows():
                 to_addr_raw = str(row.get("Email", "")).strip()
                 to_addr = extract_email(to_addr_raw)
                 if not to_addr:
                     skipped.append(to_addr_raw)
                     continue
+
                 try:
                     subject = subject_template.format(**row)
                     body_text = body_template.format(**row)
@@ -231,35 +228,17 @@ Thanks,
                     message = MIMEText(html_body, "html")
                     message["to"] = to_addr
                     message["subject"] = subject
-                    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+                    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
                     msg_body = {"raw": raw}
                     if label_id:
                         msg_body["labelIds"] = [label_id]
 
-                    sent_msg = service.users().messages().send(userId="me", body=msg_body).execute()
-                    thread_id = sent_msg["threadId"]
-                    df.at[idx, "threadId"] = thread_id
+                    service.users().messages().send(userId="me", body=msg_body).execute()
 
                     sent_count += 1
                     time.sleep(delay)
                 except Exception as e:
                     errors.append((to_addr, str(e)))
-
-        # ========================================
-        # Send Follow-Ups
-        # ========================================
-        if followup_enabled:
-            time.sleep(followup_delay)
-            for idx, row in df.iterrows():
-                thread_id = row.get("threadId")
-                to_addr = row.get("Email")
-                if thread_id and to_addr:
-                    followup_subject = "Re: " + subject_template.format(**row)
-                    followup_html = convert_bold(followup_body.format(**row))
-                    try:
-                        send_followup(service, to_addr, thread_id, followup_subject, followup_html)
-                    except Exception as e:
-                        errors.append((to_addr, f"Follow-up error: {e}"))
 
         # ========================================
         # Summary
