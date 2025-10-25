@@ -1,5 +1,5 @@
 # ========================================
-# Gmail Mail Merge Tool - Modern UI Edition
+# Gmail Mail Merge Tool - Modern UI Edition (Encoding Fix)
 # ========================================
 import streamlit as st
 import pandas as pd
@@ -209,10 +209,20 @@ if not st.session_state["sending"]:
     uploaded_file = st.file_uploader("Upload CSV or Excel file", type=["csv", "xlsx"])
 
     if uploaded_file:
+        # --- FIX: Safe CSV reading with encoding fallback ---
         if uploaded_file.name.lower().endswith("csv"):
-            df = pd.read_csv(uploaded_file)
+            try:
+                df = pd.read_csv(uploaded_file, encoding="utf-8")
+            except UnicodeDecodeError:
+                try:
+                    uploaded_file.seek(0)
+                    df = pd.read_csv(uploaded_file, encoding="latin1")
+                except Exception:
+                    st.error("⚠️ Unable to read the uploaded CSV. Please check that it's a valid CSV file.")
+                    st.stop()
         else:
             df = pd.read_excel(uploaded_file)
+        # -----------------------------------------------------
 
         for col in ["ThreadId", "RfcMessageId", "Status"]:
             if col not in df.columns:
