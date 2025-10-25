@@ -34,7 +34,7 @@ with st.sidebar:
     st.markdown("- 🔁 New Run / Reset")
     st.markdown("- 🗂️ Merge History")
     st.markdown("---")
-    st.caption("Developed with ❤️ by Ranjith")
+    st.caption("Developed by Ranjith")
 
 # Main Header
 st.markdown("<h1 style='text-align:center;'>📧 Gmail Mail Merge Tool</h1>", unsafe_allow_html=True)
