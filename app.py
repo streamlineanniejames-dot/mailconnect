@@ -1,5 +1,5 @@
-# ======================================== 
-# Gmail Mail Merge Tool - Batch + Resume (Stable No-Rerun Edition)
+# ========================================
+# Gmail Mail Merge Tool - Batch + Resume (Silent Mode)
 # ========================================
 import streamlit as st
 import pandas as pd
@@ -58,7 +58,7 @@ if os.path.exists(DONE_FILE) and not st.session_state.get("done", False):
             done_info = json.load(f)
         file_path = done_info.get("file")
         if file_path and os.path.exists(file_path):
-            st.session_state["file_path"] = file_path
+            st.session_state["file_path"] = file_path  # Store in session_state
             st.success("✅ Previous mail merge completed successfully.")
             with open(st.session_state["file_path"], "rb") as f:
                 st.download_button(
@@ -165,8 +165,7 @@ else:
         flow.fetch_token(code=code[0])
         creds = flow.credentials
         st.session_state["creds"] = creds.to_json()
-        st.experimental_set_query_params()  # clear ?code= param
-        st.stop()  # stop here to prevent double rerun
+        st.rerun()
     else:
         flow = Flow.from_client_config(CLIENT_CONFIG, scopes=SCOPES)
         flow.redirect_uri = st.secrets["gmail"]["redirect_uri"]
@@ -199,6 +198,7 @@ if not st.session_state["sending"]:
         else:
             df = pd.read_excel(uploaded_file)
 
+        # Add missing columns
         for col in ["ThreadId", "RfcMessageId", "Status"]:
             if col not in df.columns:
                 df[col] = ""
@@ -206,7 +206,10 @@ if not st.session_state["sending"]:
         df.reset_index(drop=True, inplace=True)
         st.info("📌 Include 'ThreadId' and 'RfcMessageId' columns for follow-ups if needed.")
 
+        # Editable data grid
         edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+
+        # ✅ Sync deletions before sending
         df = edited_df.reset_index(drop=True)
 
         pending_indices = df.index[df["Status"] != "Sent"].tolist()
@@ -226,6 +229,7 @@ Thanks,
         delay = st.slider("Delay (seconds)", 20, 75, 20)
         send_mode = st.radio("Choose mode", ["🆕 New Email", "↩️ Follow-up (Reply)", "💾 Save as Draft"])
 
+        # Preview
         if not df.empty:
             preview_row = df.iloc[0]
             try:
@@ -251,7 +255,7 @@ Thanks,
                 "delay": delay,
                 "send_mode": send_mode
             })
-            st.experimental_rerun()
+            st.rerun()
 
 # ========================================
 # Sending Mode with Batch Labeling
@@ -283,6 +287,7 @@ if st.session_state["sending"]:
             break
 
         row = df.iloc[idx]
+
         pct = int(((i + 1) / total) * 100)
         progress.progress(min(max(pct, 0), 100))
         status_box.info(f"Processing {i + 1}/{total}")
@@ -319,6 +324,7 @@ if st.session_state["sending"]:
             if send_mode == "💾 Save as Draft":
                 service.users().drafts().create(userId="me", body={"message": msg_body}).execute()
                 df.loc[idx, "Status"] = "Draft"
+                time.sleep(random.uniform(delay * 0.9, delay * 1.1))
             else:
                 sent_msg = service.users().messages().send(userId="me", body=msg_body).execute()
                 msg_id = sent_msg.get("id", "")
@@ -327,17 +333,16 @@ if st.session_state["sending"]:
                 df.loc[idx, "Status"] = "Sent"
                 if send_mode == "🆕 New Email" and label_id:
                     sent_message_ids.append(msg_id)
+                time.sleep(random.uniform(delay * 0.9, delay * 1.1))
 
-            time.sleep(random.uniform(delay * 0.9, delay * 1.1))
             sent_count += 1
             batch_count += 1
-
         except Exception as e:
             df.loc[idx, "Status"] = "Error"
             errors.append((to_addr, str(e)))
             st.error(f"Error for {to_addr}: {e}")
 
-    # Save and backup
+    # Save & backup
     if send_mode != "💾 Save as Draft":
         if sent_message_ids and label_id:
             try:
@@ -348,28 +353,27 @@ if st.session_state["sending"]:
             except Exception as e:
                 st.warning(f"Batch labeling failed: {e}")
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_label = re.sub(r'[^A-Za-z0-9_-]', '_', label_name)
-    file_name = f"Updated_{safe_label}_{timestamp}.csv"
-    file_path = os.path.join("/tmp", file_name)
-    df.to_csv(file_path, index=False)
-    st.session_state["file_path"] = file_path
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_label = re.sub(r'[^A-Za-z0-9_-]', '_', label_name)
+        file_name = f"Updated_{safe_label}_{timestamp}.csv"
+        file_path = os.path.join("/tmp", file_name)
+        df.to_csv(file_path, index=False)
 
-    try:
-        send_email_backup(service, file_path)
-    except Exception as e:
-        st.warning(f"Backup email failed: {e}")
+        # ✅ Store file_path in session_state
+        st.session_state["file_path"] = file_path
 
-    with open(DONE_FILE, "w") as f:
-        json.dump({"done_time": str(datetime.now()), "file": file_path}, f)
+        try:
+            send_email_backup(service, file_path)
+        except Exception as e:
+            st.warning(f"Backup email failed: {e}")
+
+        with open(DONE_FILE, "w") as f:
+            json.dump({"done_time": str(datetime.now()), "file": file_path}, f)
 
     st.session_state["sending"] = False
     st.session_state["done"] = True
     st.session_state["summary"] = {"sent": sent_count, "errors": errors, "skipped": skipped}
-
-    # ✅ No rerun — stay here to render completion
-    st.success("✅ Sending complete! Scroll down to download your updated CSV.")
-    st.stop()
+    st.rerun()
 
 # ========================================
 # Completion
@@ -382,6 +386,7 @@ if st.session_state["done"]:
     if summary.get("skipped"):
         st.warning(f"⚠️ Skipped: {summary['skipped']}")
 
+    # ✅ Show download button using session_state
     file_path = st.session_state.get("file_path")
     if file_path and os.path.exists(file_path):
         with open(file_path, "rb") as f:
