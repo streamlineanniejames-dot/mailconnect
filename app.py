@@ -1,5 +1,5 @@
 # ========================================
-# Gmail Mail Merge Tool - Batch + Resume (Silent Mode)
+# Gmail Mail Merge Tool - Batch + Resume (Silent Mode) [Patched]
 # ========================================
 import streamlit as st
 import pandas as pd
@@ -193,10 +193,20 @@ if not st.session_state["sending"]:
     uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
 
     if uploaded_file:
-        if uploaded_file.name.lower().endswith("csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
+        # =========================
+        # CSV / Excel Handling with encoding fix
+        # =========================
+        try:
+            if uploaded_file.name.lower().endswith("csv"):
+                try:
+                    df = pd.read_csv(uploaded_file, encoding='utf-8')
+                except UnicodeDecodeError:
+                    df = pd.read_csv(uploaded_file, encoding='latin1')
+            else:
+                df = pd.read_excel(uploaded_file)
+        except Exception as e:
+            st.error(f"⚠️ Could not read file: {e}")
+            st.stop()
 
         # Add missing columns
         for col in ["ThreadId", "RfcMessageId", "Status"]:
@@ -258,7 +268,7 @@ Thanks,
             st.rerun()
 
 # ========================================
-# Sending Mode with Batch Labeling
+# Sending Mode with Batch Labeling (Fixed)
 # ========================================
 if st.session_state["sending"]:
     df = st.session_state["df"]
@@ -279,13 +289,14 @@ if st.session_state["sending"]:
 
     total = len(pending_indices)
     sent_count, skipped, errors = 0, [], []
-    batch_count = 0
     sent_message_ids = []
 
-    for i, idx in enumerate(pending_indices):
-        if send_mode != "💾 Save as Draft" and batch_count >= BATCH_SIZE_DEFAULT:
-            break
+    # =========================
+    # Take only up to batch size
+    # =========================
+    current_batch = pending_indices[:BATCH_SIZE_DEFAULT]
 
+    for i, idx in enumerate(current_batch):
         row = df.iloc[idx]
 
         pct = int(((i + 1) / total) * 100)
@@ -336,11 +347,15 @@ if st.session_state["sending"]:
                 time.sleep(random.uniform(delay * 0.9, delay * 1.1))
 
             sent_count += 1
-            batch_count += 1
         except Exception as e:
             df.loc[idx, "Status"] = "Error"
             errors.append((to_addr, str(e)))
             st.error(f"Error for {to_addr}: {e}")
+
+    # =========================
+    # Update pending_indices in session_state
+    # =========================
+    st.session_state["pending_indices"] = pending_indices[len(current_batch):]
 
     # Save & backup
     if send_mode != "💾 Save as Draft":
@@ -359,7 +374,6 @@ if st.session_state["sending"]:
         file_path = os.path.join("/tmp", file_name)
         df.to_csv(file_path, index=False)
 
-        # ✅ Store file_path in session_state
         st.session_state["file_path"] = file_path
 
         try:
@@ -386,7 +400,6 @@ if st.session_state["done"]:
     if summary.get("skipped"):
         st.warning(f"⚠️ Skipped: {summary['skipped']}")
 
-    # ✅ Show download button using session_state
     file_path = st.session_state.get("file_path")
     if file_path and os.path.exists(file_path):
         with open(file_path, "rb") as f:
