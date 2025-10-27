@@ -47,7 +47,7 @@ CLIENT_CONFIG = {
 # Constants
 # ========================================
 DONE_FILE = "/tmp/mailmerge_done.json"
-BATCH_SIZE_DEFAULT = 50
+BATCH_SIZE_DEFAULT = 50  # Default batch size for send/follow-up
 
 # ========================================
 # Recovery Logic
@@ -58,7 +58,7 @@ if os.path.exists(DONE_FILE) and not st.session_state.get("done", False):
             done_info = json.load(f)
         file_path = done_info.get("file")
         if file_path and os.path.exists(file_path):
-            st.session_state["file_path"] = file_path  # Store in session_state
+            st.session_state["file_path"] = file_path
             st.success("✅ Previous mail merge completed successfully.")
             with open(st.session_state["file_path"], "rb") as f:
                 st.download_button(
@@ -193,9 +193,6 @@ if not st.session_state["sending"]:
     uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
 
     if uploaded_file:
-        # =========================
-        # CSV / Excel Handling with encoding fix
-        # =========================
         try:
             if uploaded_file.name.lower().endswith("csv"):
                 try:
@@ -208,7 +205,6 @@ if not st.session_state["sending"]:
             st.error(f"⚠️ Could not read file: {e}")
             st.stop()
 
-        # Add missing columns
         for col in ["ThreadId", "RfcMessageId", "Status"]:
             if col not in df.columns:
                 df[col] = ""
@@ -216,12 +212,8 @@ if not st.session_state["sending"]:
         df.reset_index(drop=True, inplace=True)
         st.info("📌 Include 'ThreadId' and 'RfcMessageId' columns for follow-ups if needed.")
 
-        # Editable data grid
         edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
-
-        # ✅ Sync deletions before sending
         df = edited_df.reset_index(drop=True)
-
         pending_indices = df.index[df["Status"] != "Sent"].tolist()
 
         subject_template = st.text_input("Subject", "Hello {Name}")
@@ -239,7 +231,6 @@ Thanks,
         delay = st.slider("Delay (seconds)", 20, 75, 20)
         send_mode = st.radio("Choose mode", ["🆕 New Email", "↩️ Follow-up (Reply)", "💾 Save as Draft"])
 
-        # Preview
         if not df.empty:
             preview_row = df.iloc[0]
             try:
@@ -268,7 +259,7 @@ Thanks,
             st.rerun()
 
 # ========================================
-# Sending Mode with Batch Labeling (Fixed)
+# Sending Mode with Batch Labeling (Fixed + Draft batch = 110)
 # ========================================
 if st.session_state["sending"]:
     df = st.session_state["df"]
@@ -292,9 +283,12 @@ if st.session_state["sending"]:
     sent_message_ids = []
 
     # =========================
-    # Take only up to batch size
+    # Take only up to batch size (dynamic per mode)
     # =========================
-    current_batch = pending_indices[:BATCH_SIZE_DEFAULT]
+    if send_mode == "💾 Save as Draft":
+        current_batch = pending_indices[:110]
+    else:
+        current_batch = pending_indices[:BATCH_SIZE_DEFAULT]
 
     for i, idx in enumerate(current_batch):
         row = df.iloc[idx]
@@ -352,12 +346,8 @@ if st.session_state["sending"]:
             errors.append((to_addr, str(e)))
             st.error(f"Error for {to_addr}: {e}")
 
-    # =========================
-    # Update pending_indices in session_state
-    # =========================
     st.session_state["pending_indices"] = pending_indices[len(current_batch):]
 
-    # Save & backup
     if send_mode != "💾 Save as Draft":
         if sent_message_ids and label_id:
             try:
