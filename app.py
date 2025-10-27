@@ -1,5 +1,5 @@
-# ========================================
-# Gmail Mail Merge Tool - Modern UI Edition (Encoding Fix)
+# ======================================== 
+# Gmail Mail Merge Tool - Modern UI Edition (Encoding Fix + Draft Default 110)
 # ========================================
 import streamlit as st
 import pandas as pd
@@ -66,6 +66,7 @@ CLIENT_CONFIG = {
 # ========================================
 DONE_FILE = "/tmp/mailmerge_done.json"
 BATCH_SIZE_DEFAULT = 50
+DRAFT_BATCH_SIZE_DEFAULT = 110  # <--- NEW: Draft mode default batch size
 
 # ========================================
 # Recovery Logic
@@ -270,11 +271,7 @@ Thanks,
             df = df.reset_index(drop=True)
             df = df.fillna("")
 
-            # --------- FIX: Exclude both Sent and Draft rows from pending list ---------
-            # Previously pending_indices = df.index[df["Status"] != "Sent"].tolist()
-            # That caused 'Draft' rows to be reprocessed on subsequent runs.
             pending_indices = df.index[~df["Status"].isin(["Sent", "Draft"])].tolist()
-            # ------------------------------------------------------------------------
 
             st.session_state.update({
                 "sending": True,
@@ -314,8 +311,11 @@ if st.session_state["sending"]:
     sent_message_ids = []
 
     for i, idx in enumerate(pending_indices):
-        if send_mode != "💾 Save as Draft" and batch_count >= BATCH_SIZE_DEFAULT:
+        # NEW: Draft mode gets batch limit 110
+        batch_limit = DRAFT_BATCH_SIZE_DEFAULT if send_mode == "💾 Save as Draft" else BATCH_SIZE_DEFAULT
+        if batch_count >= batch_limit:
             break
+
         row = df.loc[idx]
 
         pct = int(((i + 1) / total) * 100)
@@ -382,7 +382,7 @@ if st.session_state["sending"]:
             except Exception as e:
                 st.warning(f"⚠️ Labeling failed: {e}")
 
-    # Save updated CSV & backup email for all modes (Draft / Sent)
+    # Save updated CSV & backup email
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_label = re.sub(r'[^A-Za-z0-9_-]', '_', label_name)
     file_name = f"Updated_{safe_label}_{timestamp}.csv"
@@ -393,7 +393,6 @@ if st.session_state["sending"]:
     except Exception as e:
         st.warning(f"⚠️ Backup email failed: {e}")
 
-    # Write DONE_FILE so recovery UI shows (helps prevent accidental re-run)
     try:
         with open(DONE_FILE, "w") as f:
             json.dump({"done_time": str(datetime.now()), "file": file_path}, f)
