@@ -1,5 +1,5 @@
 # ========================================
-# Gmail Mail Merge Tool - Modern UI Edition (Encoding Fix)
+# Gmail Mail Merge Tool - Modern UI Edition (Rerun Fix)
 # ========================================
 import streamlit as st
 import pandas as pd
@@ -9,6 +9,7 @@ import re
 import json
 import random
 import os
+import uuid
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -181,7 +182,7 @@ else:
         flow.fetch_token(code=code[0])
         creds = flow.credentials
         st.session_state["creds"] = creds.to_json()
-        st.rerun()
+        st.experimental_rerun()
     else:
         flow = Flow.from_client_config(CLIENT_CONFIG, scopes=SCOPES)
         flow.redirect_uri = st.secrets["gmail"]["redirect_uri"]
@@ -269,24 +270,24 @@ Thanks,
         if st.button("🚀 Start Mail Merge"):
             df = df.reset_index(drop=True)
             df = df.fillna("")
-
-            # --------- FIX: Exclude both Sent and Draft rows from pending list ---------
-            # Previously pending_indices = df.index[df["Status"] != "Sent"].tolist()
-            # That caused 'Draft' rows to be reprocessed on subsequent runs.
             pending_indices = df.index[~df["Status"].isin(["Sent", "Draft"])].tolist()
-            # ------------------------------------------------------------------------
 
-            st.session_state.update({
-                "sending": True,
-                "df": df,
-                "pending_indices": pending_indices,
-                "subject_template": subject_template,
-                "body_template": body_template,
-                "label_name": label_name,
-                "delay": delay,
-                "send_mode": send_mode
-            })
-            st.rerun()
+            # Prevent double-starts
+            if "merge_run_id" not in st.session_state:
+                st.session_state["merge_run_id"] = uuid.uuid4().hex
+                st.session_state.update({
+                    "sending": True,
+                    "df": df,
+                    "pending_indices": pending_indices,
+                    "subject_template": subject_template,
+                    "body_template": body_template,
+                    "label_name": label_name,
+                    "delay": delay,
+                    "send_mode": send_mode,
+                })
+                st.experimental_rerun()
+            else:
+                st.warning("⚠️ A mail merge run is already active. Please reset before starting a new one.")
 
 # ========================================
 # Sending Mode with Progress
@@ -377,14 +378,14 @@ if st.session_state["sending"]:
             try:
                 service.users().messages().batchModify(
                     userId="me",
-                    body={"ids": sent_message_ids, "addLabelIds": [label_id]}
+                    body={"ids": sent_message_ids, "addLabelIds": [label_id]},
                 ).execute()
             except Exception as e:
                 st.warning(f"⚠️ Labeling failed: {e}")
 
-    # Save updated CSV & backup email for all modes (Draft / Sent)
+    # Save updated CSV & backup
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_label = re.sub(r'[^A-Za-z0-9_-]', '_', label_name)
+    safe_label = re.sub(r"[^A-Za-z0-9_-]", "_", label_name)
     file_name = f"Updated_{safe_label}_{timestamp}.csv"
     file_path = os.path.join("/tmp", file_name)
     df.to_csv(file_path, index=False)
@@ -393,17 +394,16 @@ if st.session_state["sending"]:
     except Exception as e:
         st.warning(f"⚠️ Backup email failed: {e}")
 
-    # Write DONE_FILE so recovery UI shows (helps prevent accidental re-run)
+    # Write DONE_FILE
     try:
         with open(DONE_FILE, "w") as f:
-            json.dump({"done_time": str(datetime.now()), "file": file_path}, f)
+            json.dump({"done_time": str(datetime.now()), "file": file_path, "run_id": st.session_state.get("merge_run_id")}, f)
     except Exception:
         pass
 
     st.session_state["sending"] = False
     st.session_state["done"] = True
     st.session_state["summary"] = {"sent": sent_count, "errors": errors, "skipped": skipped}
-    st.rerun()
 
 # ========================================
 # Completion Summary
@@ -416,8 +416,13 @@ if st.session_state["done"]:
         st.error(f"❌ {len(summary['errors'])} errors occurred.")
     if summary.get("skipped"):
         st.warning(f"⚠️ Skipped: {summary['skipped']}")
+
     if st.button("🔁 New Run / Reset"):
         if os.path.exists(DONE_FILE):
             os.remove(DONE_FILE)
-        st.session_state.clear()
+        keys_to_keep = {"creds"}
+        keys = list(st.session_state.keys())
+        for k in keys:
+            if k not in keys_to_keep:
+                del st.session_state[k]
         st.experimental_rerun()
