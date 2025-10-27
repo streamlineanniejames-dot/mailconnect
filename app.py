@@ -189,7 +189,7 @@ if "done" not in st.session_state:
 # ========================================
 if not st.session_state["sending"]:
     st.header("📤 Upload Recipient List")
-    st.info("⚠️ Upload up to **70–80 contacts** for smooth performance.")
+    st.info("⚠️ batch sending method is used so **50 data processed per run.**")
     uploaded_file = st.file_uploader("Upload CSV or Excel", type=["csv", "xlsx"])
 
     if uploaded_file:
