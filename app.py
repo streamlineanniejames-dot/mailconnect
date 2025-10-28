@@ -1,5 +1,5 @@
 # ======================================== 
-# Gmail Mail Merge Tool - Modern UI Edition (Encoding Fix + Draft Default 110)
+# Gmail Mail Merge Tool - Modern UI Edition (Encoding Fix + Draft Default 110)-WITH #LOGO(27/10/25)FINAL
 # ========================================
 import streamlit as st
 import pandas as pd
