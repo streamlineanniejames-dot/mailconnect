@@ -1,8 +1,5 @@
 # ======================================== 
-# Gmail Mail Merge Tool - Modern UI Edition (Encoding Fix + Draft Default 110)-WITH #LOGO(27/10/25)FINAL
-# ========================================
-# ======================================== 
-# Gmail Mail Merge Tool - Modern UI Edition (Duplicate Send Fix)
+# Gmail Mail Merge Tool - Modern UI Edition (Duplicate Send Fix + Email Preview)
 # ========================================
 import streamlit as st
 import pandas as pd
@@ -25,12 +22,10 @@ from googleapiclient.discovery import build
 # ========================================
 st.set_page_config(page_title="Gmail Mail Merge", layout="wide")
 
-# Sidebar
 with st.sidebar:
     st.image("logo.png", width=180)
-    st.markdown("---")
     st.markdown("### 📧 Gmail Mail Merge Tool")
-    st.markdown("Batch Gmail sender with draft, follow-up & resume.")
+    st.caption("Batch Gmail sender with draft, follow-up & resume.")
     st.markdown("---")
     st.caption("Developed by Ranjith")
 
@@ -155,15 +150,15 @@ creds = Credentials.from_authorized_user_info(json.loads(st.session_state["creds
 service = build("gmail", "v1", credentials=creds)
 
 # ========================================
-# UI Logic
+# App State Machine
 # ========================================
 if "step" not in st.session_state:
     st.session_state["step"] = "upload"
 
 # ---------- STEP 1: Upload & Template ----------
 if st.session_state["step"] == "upload":
-    st.header("📤 Step 1: Upload Your CSV and Template")
-    uploaded_file = st.file_uploader("Upload your contacts file (CSV or Excel)", type=["csv", "xlsx"])
+    st.header("📤 Step 1: Upload Recipient List & Create Template")
+    uploaded_file = st.file_uploader("Upload your CSV or Excel file", type=["csv", "xlsx"])
 
     if uploaded_file:
         try:
@@ -175,15 +170,42 @@ if st.session_state["step"] == "upload":
             if col not in df.columns:
                 df[col] = ""
 
-        df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+        st.dataframe(df.head())
 
         subject_template = st.text_input("✉️ Subject", "Hello {Name}")
-        body_template = st.text_area("📝 Body (Markdown supported)", "Dear {Name},\n\nWelcome to **Mail Merge App** demo.\n\nThanks,\n**Your Company**", height=250)
+        body_template = st.text_area(
+            "📝 Body (Markdown supported)",
+            """Dear {Name},
+
+Welcome to **Mail Merge App** demo.
+
+Thanks,  
+**Your Company**""",
+            height=250,
+        )
+
+        # 🔍 Email preview (first row)
+        if not df.empty:
+            preview_row = df.iloc[0]
+            try:
+                preview_subject = subject_template.format(**preview_row)
+                preview_body = convert_bold(body_template.format(**preview_row))
+            except Exception as e:
+                preview_subject = subject_template
+                preview_body = body_template
+                st.warning(f"⚠️ Could not render preview: {e}")
+
+            st.markdown("---")
+            st.subheader("👀 Email Preview (First Row)")
+            st.markdown(f"**Subject:** {preview_subject}")
+            st.markdown(preview_body, unsafe_allow_html=True)
+
+        st.markdown("---")
         label_name = st.text_input("🏷️ Gmail Label", "Mail Merge Sent")
         delay = st.slider("⏱️ Delay between emails (seconds)", 10, 60, 20)
         send_mode = st.radio("📬 Send Mode", ["🆕 New Email", "↩️ Follow-up (Reply)", "💾 Save as Draft"])
 
-        if st.button("🚀 Start Sending"):
+        if st.button("🚀 Start Mail Merge"):
             df = df.fillna("")
             pending_indices = df.index[~df["Status"].isin(["Sent", "Draft", "Error"])].tolist()
             st.session_state.update({
@@ -269,7 +291,6 @@ elif st.session_state["step"] == "sending":
         except Exception as e:
             st.warning(f"⚠️ Label apply failed: {e}")
 
-    # Save Updated CSV
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_name = f"Updated_{label_name}_{timestamp}.csv"
     file_path = os.path.join("/tmp", file_name)
