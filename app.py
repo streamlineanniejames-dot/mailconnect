@@ -1,7 +1,5 @@
-# ======================================== 
 # Gmail Mail Merge Tool - Modern UI Edition
-# (Encoding Fix + Draft Default 110 + Reply Draft Support + ETA)
-# ========================================
+# (Encoding Fix + Draft Default 110 + Reply Draft Support + Password Protect New/Reply)
 import streamlit as st
 import pandas as pd
 import base64
@@ -68,6 +66,60 @@ CLIENT_CONFIG = {
 DONE_FILE = "/tmp/mailmerge_done.json"
 BATCH_SIZE_DEFAULT = 50
 DRAFT_BATCH_SIZE_DEFAULT = 110  # default batch for draft mode
+# Allow a large draft batch so "Draft" is effectively free-to-use in bulk
+DRAFT_BATCH_SIZE_UNLIMITED = 100000
+
+# Password for protected actions (New Email / Follow-up). Put in st.secrets under ["mail_merge"]["password"]
+ADMIN_PASSWORD = st.secrets.get("mail_merge", {}).get("password", "admin123")
+
+# ========================================
+# Predefined Follow-up Templates (added)
+# ========================================
+FOLLOW_UP_TEMPLATES = {
+    "Follow 1": """Hi {First Name},
+
+Hope you’ve been doing well. Would you like to get a **few sample contacts** to check our list accuracy?
+
+Please let me know your requirements.
+
+Thanks For your Time,
+**William**
+Business Development Manager | Streamline Data
+""",
+
+    "Follow 2": """Hi {First Name},
+
+Have you reviewed my previous email? 
+
+Let me know your thoughts.
+
+Thanks For your Time,
+**William**
+Business Development Manager | Streamline Data
+""",
+
+    "Follow 3": """  Hi {First Name},
+
+I wanted to circle back on my last message. Would you like to see a **few sample contacts** to have an idea on our database
+
+Looking forward to hearing from you.
+
+Thanks For your Time,
+**William**
+Business Development Manager | Streamline Data
+""",
+
+    "Follow 4": """Hi {First Name},
+
+This is my final follow , **May be you're missed my previous Mails**  if you’d like me to send over a sample list of verified  decision-makers for your review.
+
+Looking forward to your response.
+
+Thanks For your Time,
+**William**
+Business Development Manager | Streamline Data
+""",
+}
 
 # ========================================
 # Recovery Logic
@@ -225,26 +277,68 @@ if not st.session_state["sending"]:
             if col not in df.columns:
                 df[col] = ""
 
+        # ============================================================
+        # 🔍 EMAIL SEARCH FEATURE (NO UI CHANGE / NON-DESTRUCTIVE)
+        # ============================================================
+        with st.expander("🔍 Search a specific email in your uploaded list"):
+            search_email = st.text_input("Enter email to search:", key="email_search_box")
+            if st.button("Search Email", key="email_search_button"):
+                if "Email" in df.columns:
+                    result = df[df["Email"].astype(str).str.lower() == search_email.lower()]
+                    if not result.empty:
+                        st.success("✅ Email found.")
+                        st.dataframe(result)
+                    else:
+                        st.error("❌ Email not found.")
+                else:
+                    st.error("Your file does not contain an 'Email' column.")
+        # ============================================================
+
         st.info("📌 Tip: Include 'ThreadId' and 'RfcMessageId' for follow-ups if available.")
         st.markdown("### ✏️ Edit Your Contact List")
         df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
 
         st.markdown("---")
         st.subheader("🧩 Step 2: Email Template")
-        subject_template = st.text_input("✉️ Subject", "{Name Company}")
-        body_template = st.text_area(
-            "📝 Body (Markdown + Variables like {Name})",
-            """Hi {First Name},
+
+        # --- NEW: Follow-up Template Selector ---
+        if "body_template" not in st.session_state:
+            st.session_state["body_template"] = """Hi {First Name},
 
 Welcome to **Mail Merge App** demo.
 
 Thanks,  
-**Your Company**""",
+**Your Company**"""
+
+        selected_follow = st.radio(
+            "📌 Load a follow-up template (select 'Custom' to keep editor contents)",
+            ["Custom", "Follow 1", "Follow 2", "Follow 3", "Follow 4"],
+            horizontal=True
+        )
+
+        if selected_follow != "Custom":
+            st.session_state["body_template"] = FOLLOW_UP_TEMPLATES.get(selected_follow, st.session_state["body_template"])
+
+        subject_template = st.text_input("✉️ Subject", "{Company Name}")
+        body_template = st.text_area(
+            "📝 Body (Markdown + Variables like {Name})",
+            st.session_state.get("body_template", """Hi {First Name},
+
+Welcome to **Mail Merge App** demo.
+
+Thanks,  
+**Your Company**"""),
             height=250,
         )
+        st.session_state["body_template"] = body_template
 
         label_name = st.text_input("🏷️ Gmail label", "enter a label name")
         delay = st.slider("⏱️ Delay between emails (seconds)", 20, 75, 20)
+
+        # Password input: required for New Email and Follow-up modes. Draft mode is free to use (no password required).
+        st.markdown("**Security:** New Email and Follow-up runs require an admin password. Draft mode is free to use.")
+        password_input = st.text_input("Enter admin password (required for New/Follow-up)", type="password")
+
         send_mode = st.radio("📬 Choose send mode", ["🆕 New Email", "↩️ Follow-up (Reply)", "💾 Save as Draft"])
 
         if not df.empty:
@@ -263,6 +357,12 @@ Thanks,
             st.markdown(preview_body, unsafe_allow_html=True)
 
         if st.button("🚀 Start Mail Merge"):
+            # Enforce password for New Email and Follow-up. Draft mode bypasses.
+            if send_mode != "💾 Save as Draft":
+                if password_input != ADMIN_PASSWORD:
+                    st.error("🔒 Invalid admin password. New Email and Follow-up runs are protected. If you want to use Draft mode, select 'Save as Draft' which is free to use.")
+                    st.stop()
+
             df = df.reset_index(drop=True).fillna("")
             pending_indices = df.index[~df["Status"].isin(["Sent", "Draft"])].tolist()
 
@@ -306,13 +406,14 @@ if st.session_state["sending"]:
     sent_message_ids = []
 
     for i, idx in enumerate(pending_indices):
-        batch_limit = DRAFT_BATCH_SIZE_DEFAULT if send_mode == "💾 Save as Draft" else BATCH_SIZE_DEFAULT
+        # use unlimited draft batch if in draft mode so user can "free use" drafts in bulk
+        batch_limit = DRAFT_BATCH_SIZE_UNLIMITED if send_mode == "💾 Save as Draft" else BATCH_SIZE_DEFAULT
         if batch_count >= batch_limit:
             break
 
         row = df.loc[idx]
 
-        pct = int(((i + 1) / total) * 100)
+        pct = int(((i + 1) / total) * 100) if total > 0 else 100
         progress.progress(min(max(pct, 0), 100))
 
         # --- ETA calculation ---
@@ -352,7 +453,6 @@ if st.session_state["sending"]:
                 msg_body = {"raw": raw}
 
             if send_mode == "💾 Save as Draft":
-                # Draft mode works for both new emails and replies
                 service.users().drafts().create(userId="me", body={"message": msg_body}).execute()
                 df.loc[idx, "Status"] = "Draft"
             else:
@@ -382,7 +482,6 @@ if st.session_state["sending"]:
         except Exception as e:
             st.warning(f"⚠️ Labeling failed: {e}")
 
-    # Save updated CSV & backup email
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_label = re.sub(r'[^A-Za-z0-9_-]', '_', label_name)
     file_name = f"Updated_{safe_label}_{timestamp}.csv"
